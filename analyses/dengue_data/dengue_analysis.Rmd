@@ -1,0 +1,932 @@
+---
+Systems biological analysis of immunity to dengue
+---
+
+```{r setup, include=FALSE}
+library(here)
+library(tidyverse)
+library(scPCA)
+library(Rtsne)
+library(umap)
+library(ggpubr)
+library(GEOquery)
+library(genefilter)
+library(cluster)
+library(xtable)
+
+knitr::opts_chunk$set(echo = FALSE)
+
+set.seed(9765967)
+```
+
+# Prepare the Data
+
+```{r load_data, message=FALSE, warning=FALSE}
+# load the data, already log2 transformed
+ges <- getGEO("GSE51808")$GSE51808_series_matrix.txt.gz
+
+# load the gene names
+# download table from https://www.ncbi.nlm.nih.gov/geo/query/acc.cgi?acc=GPL13158
+gene_names <- read_tsv(here("analyses/dengue_data/GPL13158-5065.txt"),
+                       skip = 16)
+
+# keep the 500 most variable genes
+var_filt_ges <- varFilter(ges, var.cutoff = 1-500/nrow(exprs(ges)))
+
+# extract the target and background datasets
+control_label <- which(var_filt_ges$`status:ch1` == "control")
+target <- t(exprs(var_filt_ges)[, -control_label])
+background <- t(exprs(var_filt_ges)[, control_label])
+
+# get the target data labels
+dengue_class <- var_filt_ges$`status:ch1`[-control_label]
+```
+
+
+## PCA
+
+```{r pca}
+# perform PCA
+dengue_pca <- prcomp(target, center = TRUE, scale. = FALSE)
+
+# compute the average silhouette widths
+group_mem <- if_else(dengue_class == "convalescent", 1,
+                     if_else(dengue_class == "DF", 2, 3))
+pca_group_sil <- silhouette(group_mem, dist(dengue_pca$x))
+
+# plot the 2D representation
+pca_df <- data.frame(
+  PC1 = dengue_pca$x[, 1],
+  PC2 = dengue_pca$x[, 2],
+  class = dengue_class
+) %>%
+  dplyr::mutate(
+    class = if_else(
+      class == "convalescent",
+      paste0(
+        "Conv. (",
+        sprintf("%.3f", round(summary(pca_group_sil)$clus.avg.widths[1], 3)),
+        ")"),
+      if_else(
+        class == "DF",
+        paste0(
+        "DF (",
+        sprintf("%.3f", round(summary(pca_group_sil)$clus.avg.widths[2], 3)),
+        ")"),
+        paste0("DHF (",
+        sprintf("%.3f", round(summary(pca_group_sil)$clus.avg.widths[3], 3)),
+        ")")
+      )
+    )
+  )
+
+pca_p <- pca_df %>%
+  ggplot(aes(x = PC1, y = PC2, colour = class)) +
+  geom_point() +
+  ggtitle("PCA") +
+  scale_colour_viridis_d(name = "Class", 
+                         begin = 0.1, end = 0.9) +
+  theme_minimal()
+pca_p
+```
+
+
+## cPCA
+
+```{r cpca}
+# perform cpca
+dengue_cpca <- scPCA(target, background, center = TRUE,
+                     penalties = 0, n_centers = 3, max_iter = 1000)
+
+# compute the average silhouette widths
+cpca_group_sil <- silhouette(group_mem, dist(dengue_cpca$x))
+
+# plot the 2D representation
+cpca_df <- data.frame(
+  cPC1 = -dengue_cpca$x[, 1],
+  cPC2 = dengue_cpca$x[, 2],
+  class = dengue_class
+) %>%
+  dplyr::mutate(
+    class = if_else(
+      class == "convalescent",
+      paste0(
+        "Conv. (",
+        sprintf("%.3f", round(summary(cpca_group_sil)$clus.avg.widths[1], 3)),
+        ")"),
+      if_else(
+        class == "DF",
+        paste0(
+        "DF (",
+        sprintf("%.3f", round(summary(cpca_group_sil)$clus.avg.widths[2], 3)),
+        ")"),
+        paste0("DHF (",
+        sprintf("%.3f", round(summary(cpca_group_sil)$clus.avg.widths[3], 3)),
+        ")")
+      )
+    )
+  )
+
+cpca_p <- cpca_df %>%
+  ggplot(aes(x = cPC1, y = cPC2, colour = class)) +
+  geom_point() +
+  ggtitle("cPCA") +
+  scale_colour_viridis_d(name = "Class",
+                         begin = 0.1, end = 0.9) +
+  theme_minimal()
+cpca_p
+
+# repeat cPCA for n_centers = 2,3,4,5
+diff_centers_cpca <- lapply(2:5, function(x) {
+  
+  # fit cPCA
+  scPCA(target, background, center = TRUE, penalties = 0, n_centers = x,
+        max_iter = 1000)
+  })
+```
+
+### cPCA Number of Centers
+
+```{r cpca_diff_centers, fig.retina=3, fig.width=8, fig.height=8}
+# this is done one-by-one to ensure the plots' axes are comparable
+
+# two centers:
+# compute the average silhouette widths
+cpca_2_group_sil <- silhouette(group_mem, dist(diff_centers_cpca[[1]]$x))
+cpca_2_df <- diff_centers_cpca[[1]]$x %>%
+  as.data.frame() %>%
+  dplyr::mutate(class = dengue_class) %>%
+  dplyr::mutate(
+    class = if_else(
+      class == "convalescent",
+      paste0(
+        "Conv. (",
+        sprintf("%.3f", round(summary(cpca_2_group_sil)$clus.avg.widths[1], 3)),
+        ")"),
+      if_else(
+        class == "DF",
+        paste0(
+        "DF (",
+        sprintf("%.3f", round(summary(cpca_2_group_sil)$clus.avg.widths[2], 3)),
+        ")"),
+        paste0("DHF (",
+        sprintf("%.3f", round(summary(cpca_2_group_sil)$clus.avg.widths[3], 3)),
+        ")")
+      )
+    )
+  )
+
+colnames(cpca_2_df) <- c("cPC1", "cPC2", "label")
+
+# plot the results
+p_cpca_2 <- ggplot(cpca_2_df, aes(x = cPC1, y = -cPC2, colour = label)) +
+  geom_point() +
+  ggtitle("Two Clusters") +
+  xlab("cPC1") +
+  ylab("cPC2") +
+  scale_colour_viridis_d(name = "Class",
+                         begin = 0.1, end = 0.9) +
+  theme_minimal()
+
+# three centers:
+cpca_3_group_sil <- silhouette(group_mem, dist(diff_centers_cpca[[2]]$x))
+cpca_3_df <- diff_centers_cpca[[2]]$x %>%
+  as.data.frame() %>%
+  dplyr::mutate(class = dengue_class) %>%
+  dplyr::mutate(
+    class = if_else(
+      class == "convalescent",
+      paste0(
+        "Conv. (",
+        sprintf("%.3f", round(summary(cpca_3_group_sil)$clus.avg.widths[1], 3)),
+        ")"),
+      if_else(
+        class == "DF",
+        paste0(
+        "DF (",
+        sprintf("%.3f", round(summary(cpca_3_group_sil)$clus.avg.widths[2], 3)),
+        ")"),
+        paste0("DHF (",
+        sprintf("%.3f", round(summary(cpca_3_group_sil)$clus.avg.widths[3], 3)),
+        ")")
+      )
+    )
+  )
+
+colnames(cpca_3_df) <- c("cPC1", "cPC2", "label")
+
+# plot the results
+p_cpca_3 <- ggplot(cpca_3_df, aes(x = -cPC1, y = cPC2, colour = label)) +
+  geom_point() +
+  ggtitle("Three Clusters") +
+  xlab("cPC1") +
+  ylab("cPC2") +
+  scale_colour_viridis_d(name = "Class",
+                         begin = 0.1, end = 0.9) +
+  theme_minimal()
+
+# four centers:
+cpca_4_group_sil <- silhouette(group_mem, dist(diff_centers_cpca[[3]]$x))
+cpca_4_df <- diff_centers_cpca[[3]]$x %>%
+  as.data.frame() %>%
+  dplyr::mutate(class = dengue_class)  %>%
+  dplyr::mutate(
+    class = if_else(
+      class == "convalescent",
+      paste0(
+        "Conv. (",
+        sprintf("%.3f", round(summary(cpca_4_group_sil)$clus.avg.widths[1], 3)),
+        ")"),
+      if_else(
+        class == "DF",
+        paste0(
+        "DF (",
+        sprintf("%.3f", round(summary(cpca_4_group_sil)$clus.avg.widths[2], 3)),
+        ")"),
+        paste0("DHF (",
+        sprintf("%.3f", round(summary(cpca_4_group_sil)$clus.avg.widths[3], 3)),
+        ")")
+      )
+    )
+  )
+
+colnames(cpca_4_df) <- c("cPC1", "cPC2", "label")
+
+# plot the results
+p_cpca_4 <- ggplot(cpca_4_df, aes(x = -cPC1, y = cPC2, colour = label)) +
+  geom_point() +
+  ggtitle("Four Clusters") +
+  xlab("cPC1") +
+  ylab("cPC2") +
+  scale_colour_viridis_d(name = "Class",
+                         begin = 0.1, end = 0.9) +
+  theme_minimal()
+
+# five centers:
+cpca_5_group_sil <- silhouette(group_mem, dist(diff_centers_cpca[[4]]$x))
+cpca_5_df <- diff_centers_cpca[[4]]$x %>%
+  as.data.frame() %>%
+  dplyr::mutate(class = dengue_class)  %>%
+  dplyr::mutate(
+    class = if_else(
+      class == "convalescent",
+      paste0(
+        "Conv. (",
+        sprintf("%.3f", round(summary(cpca_5_group_sil)$clus.avg.widths[1], 3)),
+        ")"),
+      if_else(
+        class == "DF",
+        paste0(
+        "DF (",
+        sprintf("%.3f", round(summary(cpca_5_group_sil)$clus.avg.widths[2], 3)),
+        ")"),
+        paste0("DHF (",
+        sprintf("%.3f", round(summary(cpca_5_group_sil)$clus.avg.widths[3], 3)),
+        ")")
+      )
+    )
+  )
+
+colnames(cpca_5_df) <- c("cPC1", "cPC2", "label")
+
+# plot the results
+p_cpca_5 <- ggplot(cpca_5_df, aes(x = cPC1, y = -cPC2, colour = label)) +
+  geom_point() +
+  ggtitle("Five Clusters") +
+  xlab("cPC1") +
+  ylab("cPC2") +
+  scale_colour_viridis_d(name = "Class",
+                         begin = 0.1, end = 0.9) +
+  theme_minimal()
+
+# combine the 4 plots
+ggarrange(p_cpca_2, p_cpca_3, p_cpca_4, p_cpca_5,
+          ncol = 2, nrow = 2)
+```
+
+```{r save-dengue-cpca-centers}
+ggsave(
+  filename = here("manuscript", "figures", "dengue_cpca_centers.png"),
+  units = "mm",
+  width = 178,
+  height = 100,
+  scale = 1.5,
+  dpi = 350
+)
+```
+
+## scPCA
+
+```{r scpca}
+# perform scpca (takes a while to run, so load from saved file)
+# see cluster_files folder
+load(file = here("C:/Users/adity/Downloads/EHDBDscPCA-master/EHDBDscPCA-master/analyses/dengue_data/cluster_files/scpca.Rdata"))
+
+# compute the average silhouette widths
+scpca_group_sil <- silhouette(group_mem, dist(dengue_scpca$x))
+
+# plot the 2D representation
+scpca_df <- data.frame(
+  scPC1 = dengue_scpca$x[, 1],
+  scPC2 = dengue_scpca$x[, 2],
+  class = dengue_class
+) %>%
+  dplyr::mutate(
+    class = if_else(
+      class == "convalescent",
+      paste0(
+        "Conv. (",
+        sprintf("%.3f", round(summary(scpca_group_sil)$clus.avg.widths[1], 3)),
+        ")"),
+      if_else(
+        class == "DF",
+        paste0(
+        "DF (",
+        sprintf("%.3f", round(summary(scpca_group_sil)$clus.avg.widths[2], 3)),
+        ")"),
+        paste0("DHF (",
+        sprintf("%.3f", round(summary(scpca_group_sil)$clus.avg.widths[3], 3)),
+        ")")
+      )
+    )
+  )
+
+scpca_p <- scpca_df %>%
+  ggplot(aes(x = scPC1, y = scPC2, colour = class)) +
+  geom_point() +
+  ggtitle("scPCA") +
+  scale_colour_viridis_d(name = "Class",
+                         begin = 0.1, end = 0.9) +
+  theme_minimal()
+scpca_p
+```
+
+
+### scPCA Number of Centers
+
+```{r scpca_diff_centers, fig.retina=3, fig.width=8, fig.height=8}
+# this is done one-by-one to ensure the plots' axes are comparable
+load(file = here("analyses/dengue_data/cluster_files/diff_centers_scpca.RData"))
+
+# two centers:
+scpca_2_group_sil <- silhouette(group_mem, dist(diff_centers_scpca[[1]]$x))
+scpca_2_df <- diff_centers_scpca[[1]]$x %>%
+  as.data.frame() %>%
+  dplyr::mutate(class = dengue_class) %>%
+  dplyr::mutate(
+    class = if_else(
+      class == "convalescent",
+      paste0(
+        "Conv. (",
+        sprintf("%.3f", round(summary(scpca_2_group_sil)$clus.avg.widths[1], 3)),
+        ")"),
+      if_else(
+        class == "DF",
+        paste0(
+        "DF (",
+        sprintf("%.3f", round(summary(scpca_2_group_sil)$clus.avg.widths[2], 3)),
+        ")"),
+        paste0("DHF (",
+        sprintf("%.3f", round(summary(scpca_2_group_sil)$clus.avg.widths[3], 3)),
+        ")")
+      )
+    )
+  )
+
+colnames(scpca_2_df) <- c("scPC1", "scPC2", "class")
+
+# plot the results
+p_scpca_2 <- ggplot(scpca_2_df, aes(x = scPC1, y = scPC2, colour = class)) +
+  geom_point() +
+  ggtitle("Two Clusters") +
+  xlab("scPC1") +
+  ylab("scPC2") +
+  scale_colour_viridis_d(name = "Class",
+                         begin = 0.1, end = 0.9) +
+  theme_minimal()
+
+# three centers:
+scpca_3_group_sil <- silhouette(group_mem, dist(diff_centers_scpca[[2]]$x))
+scpca_3_df <- diff_centers_scpca[[2]]$x %>%
+  as.data.frame() %>%
+  dplyr::mutate(class = dengue_class) %>%
+  dplyr::mutate(
+    class = if_else(
+      class == "convalescent",
+      paste0(
+        "Conv. (",
+        sprintf("%.3f", round(summary(scpca_3_group_sil)$clus.avg.widths[1], 3)),
+        ")"),
+      if_else(
+        class == "DF",
+        paste0(
+        "DF (",
+        sprintf("%.3f", round(summary(scpca_3_group_sil)$clus.avg.widths[2], 3)),
+        ")"),
+        paste0("DHF (",
+        sprintf("%.3f", round(summary(scpca_3_group_sil)$clus.avg.widths[3], 3)),
+        ")")
+      )
+    )
+  )
+
+colnames(scpca_3_df) <- c("scPC1", "scPC2", "class")
+
+# plot the results
+p_scpca_3 <- ggplot(scpca_3_df, aes(x = scPC1, y = scPC2, colour = class)) +
+  geom_point() +
+  ggtitle("Three Clusters") +
+  xlab("scPC1") +
+  ylab("scPC2") +
+  scale_colour_viridis_d(name = "Class",
+                         begin = 0.1, end = 0.9) +
+  theme_minimal()
+
+# four centers:
+scpca_4_group_sil <- silhouette(group_mem, dist(diff_centers_scpca[[3]]$x))
+scpca_4_df <- diff_centers_scpca[[3]]$x %>%
+  as.data.frame() %>%
+  dplyr::mutate(class = dengue_class) %>%
+  dplyr::mutate(
+    class = if_else(
+      class == "convalescent",
+      paste0(
+        "Conv. (",
+        sprintf("%.3f", round(summary(scpca_4_group_sil)$clus.avg.widths[1], 3)),
+        ")"),
+      if_else(
+        class == "DF",
+        paste0(
+        "DF (",
+        sprintf("%.3f", round(summary(scpca_4_group_sil)$clus.avg.widths[2], 3)),
+        ")"),
+        paste0("DHF (",
+        sprintf("%.3f", round(summary(scpca_4_group_sil)$clus.avg.widths[3], 3)),
+        ")")
+      )
+    )
+  )
+
+colnames(scpca_4_df) <- c("scPC1", "scPC2", "class")
+
+# plot the results
+p_scpca_4 <- ggplot(scpca_4_df, aes(x = scPC1, y = scPC2, colour = class)) +
+  geom_point() +
+  ggtitle("Four Clusters") +
+  xlab("scPC1") +
+  ylab("scPC2") +
+  scale_colour_viridis_d(name = "Class",
+                         begin = 0.1, end = 0.9) +
+  theme_minimal()
+
+# five centers:
+scpca_5_group_sil <- silhouette(group_mem, dist(diff_centers_scpca[[4]]$x))
+scpca_5_df <- diff_centers_scpca[[4]]$x %>%
+  as.data.frame() %>%
+  dplyr::mutate(class = dengue_class) %>%
+  dplyr::mutate(
+    class = if_else(
+      class == "convalescent",
+      paste0(
+        "Conv. (",
+        sprintf("%.3f", round(summary(scpca_5_group_sil)$clus.avg.widths[1], 3)),
+        ")"),
+      if_else(
+        class == "DF",
+        paste0(
+        "DF (",
+        sprintf("%.3f", round(summary(scpca_5_group_sil)$clus.avg.widths[2], 3)),
+        ")"),
+        paste0("DHF (",
+        sprintf("%.3f", round(summary(scpca_5_group_sil)$clus.avg.widths[3], 3)),
+        ")")
+      )
+    )
+  )
+
+colnames(scpca_5_df) <- c("sscPC1", "scPC2", "class")
+
+# plot the results
+p_scpca_5 <- ggplot(scpca_5_df, aes(x = sscPC1, y = -scPC2, colour = class)) +
+  geom_point() +
+  ggtitle("Five Clusters") +
+  xlab("scPC1") +
+  ylab("scPC2") +
+  scale_colour_viridis_d(name = "Class",
+                         begin = 0.1, end = 0.9) +
+  theme_minimal()
+
+# combine the 4 plots
+ggarrange(p_scpca_2, p_scpca_3, p_scpca_4, p_scpca_5,
+          ncol = 2, nrow = 2)
+```
+
+
+### Genes With Non-Zero Loadings
+
+Tables included in the appendix of the manuscript.
+
+```{r map_genes}
+# match the affymetrix code to the gene symbol
+gene_df <- target %>% colnames %>% tibble()
+colnames(gene_df) <- "affy_code"
+gene_df <- gene_df %>%
+  left_join(gene_names, by = c("affy_code" = "ID")) %>%
+  select(affy_code, `Gene Symbol`, `Gene Title`)
+
+# extract the gene symbols that have non-zero loadings in the scPC
+rotation_df <- dengue_scpca$rotation %>%
+  as_tibble %>%
+  dplyr::mutate(
+    affy_code = rownames(dengue_scpca$rotation)
+  ) %>%
+  dplyr::left_join(gene_df, by = "affy_code")
+colnames(rotation_df) <- c("scPCA1", "scPCA2", "affy_code", "gene_sym",
+                           "gene_title")
+
+# print the table for the supp info
+gene_scpca1 <- rotation_df %>%
+  dplyr::filter(scPCA1 != 0) %>%
+  select(gene_sym, gene_title, scPCA1) %>%
+  xtable(
+    caption = "Genes with non-zero loadings in first scPCA loadings vector.",
+    digits = 4
+  )
+
+gene_scpca2 <- rotation_df %>%
+  dplyr::filter(scPCA2 != 0) %>%
+  select(gene_sym, gene_title, scPCA2) %>%
+  xtable(
+    caption = "Genes with non-zero loadings in second scPCA loadings vector.",
+    digits = 4
+  )
+```
+
+### Comparison of cPCA and scPCA Loadings
+
+```{r comp_loadings, warning=FALSE, message=FALSE}
+# compute the relative absolute loading ratios
+cpca_loads_df <- dengue_cpca$rotation %>%
+  as.data.frame() %>%
+  dplyr::mutate(
+    V1 = abs(V1),
+    V2 = abs(V2),
+    V1 = (V1-min(V1))/(max(V1)-min(V1)),
+    V2 = (V2-min(V2))/(max(V2)-min(V2))
+  )
+scpca_loads_df <- dengue_scpca$rotation %>%
+  as.data.frame() %>%
+  dplyr::mutate(
+    V1 = abs(V1),
+    V2 = abs(V2),
+    V1 = (V1-min(V1))/(max(V1)-min(V1)),
+    V2 = (V2-min(V2))/(max(V2)-min(V2))
+  )
+
+# create the loadings comparison plot
+load_diff_df <- bind_rows(
+  cpca_loads_df,
+  scpca_loads_df
+) %>%
+  dplyr::mutate(
+    sparse = c(rep("0", ncol(target)), rep("1", ncol(target))),
+    gene = rep(1:ncol(target), 2)
+  )
+
+# order the genes based on decreasing rel abs cpca loadings
+ord_1_genes <- factor(load_diff_df$gene,
+                      levels = sort(load_diff_df$V1[1:500], decreasing = TRUE,
+                                    index.return = TRUE)$ix)
+ord_2_genes <- factor(load_diff_df$gene,
+                      levels = sort(load_diff_df$V2[1:500], decreasing = TRUE,
+                                    index.return = TRUE)$ix)
+load_diff_df <- load_diff_df %>%
+  dplyr::mutate(
+    gene1 = ord_1_genes,
+    gene2 = ord_2_genes
+  )
+
+colnames(load_diff_df) <- c("comp1", "comp2", "sparse", "gene",
+                            "gene1", "gene2")
+
+p1 <- load_diff_df %>%
+  ggplot(aes(y = comp1, x = gene1, fill = sparse, alpha = sparse)) +
+    geom_bar(stat = "identity", position = position_identity(), width = 1) +
+    xlab("Gene") +
+    ylab("Standardized Abs.\n Loadings") +
+    ggtitle("First Loadings Vector Comparison") +
+    scale_fill_viridis_d(name = "Method",
+                         labels = c("cPCA", "scPCA"),
+                         begin = 0.9, end = 0.1) +
+    scale_alpha_discrete(range = c(0.5, 1),
+                         guide = FALSE) +
+    theme_minimal() +
+    theme(panel.grid.major = element_blank(),
+          panel.grid.minor = element_blank(),
+          axis.text.x=element_blank(),
+          axis.ticks.x=element_blank())
+
+p2 <- load_diff_df %>%
+  ggplot(aes(y = comp2, x = gene2, fill = sparse, alpha = sparse)) +
+    geom_bar(stat = "identity", position = position_identity(), width = 1) +
+    xlab("Genes") +
+    ylab("Standardized Abs.\n Loadings") +
+    ggtitle("Second Loadings Vector Comparison") +
+    scale_fill_viridis_d(name = "Method",
+                         labels = c("cPCA", "scPCA"),
+                         begin = 0.9, end = 0.1) +
+    scale_alpha_discrete(range = c(0.5, 1),
+                         guide = FALSE) +
+    theme_minimal() +
+    theme(panel.grid.major = element_blank(),
+          panel.grid.minor = element_blank(),
+          axis.text.x=element_blank(),
+          axis.ticks.x=element_blank())
+
+
+loadings_comp <- annotate_figure(
+  ggarrange(p1, p2, nrow = 1, ncol = 2,
+            common.legend = TRUE, legend = "right")
+)
+loadings_comp
+```
+
+## cPCA (Tuned with Cross-Validation)
+
+3-fold cross-validation was used to tune the contrastive parameter.
+
+```{r cPCA_cv}
+# see cluster_files folder
+load(file = here("analyses/dengue_data/cluster_files/cpca_cv.Rdata"))
+
+# compute the average silhouette widths
+cpca_cv_group_sil <- silhouette(group_mem, dist(dengue_cpca_cv$x))
+
+# plot the 2D representation
+cpca_cv_df <- data.frame(
+  cPC1 = -dengue_cpca_cv$x[, 1],
+  cPC2 = dengue_cpca_cv$x[, 2],
+  class = dengue_class
+) %>%
+  dplyr::mutate(
+    class = if_else(
+      class == "convalescent",
+      paste0(
+        "Conv. (",
+        sprintf("%.3f", round(summary(cpca_cv_group_sil)$clus.avg.widths[1], 3)),
+        ")"),
+      if_else(
+        class == "DF",
+        paste0(
+        "DF (",
+        sprintf("%.3f", round(summary(cpca_cv_group_sil)$clus.avg.widths[2], 3)),
+        ")"),
+        paste0("DHF (",
+        sprintf("%.3f", round(summary(cpca_cv_group_sil)$clus.avg.widths[3], 3)),
+        ")")
+      )
+    )
+  )
+
+cpca_cv_p <- cpca_cv_df %>%
+  ggplot(aes(x = cPC1, y = cPC2, colour = class)) +
+  geom_point() +
+  ggtitle("3-Fold CV-cPCA") +
+  scale_colour_viridis_d(name = "Class",
+                         begin = 0.1, end = 0.9) +
+  theme_minimal()
+cpca_cv_p
+```
+
+
+
+## scPCA (Tuned with Cross-Validation)
+
+3-fold cross-validation was used to tune the hyperparameters.
+
+```{r scPCA_cv}
+# see cluster_files folder
+load(file = here("analyses/dengue_data/cluster_files/scpca_cv.Rdata"))
+
+# compute the average silhouette widths
+scpca_cv_group_sil <- silhouette(group_mem, dist(dengue_scpca_cv$x))
+
+# plot the 2D representation
+scpca_cv_df <- data.frame(
+  scPC1 = dengue_scpca_cv$x[, 1],
+  scPC2 = dengue_scpca_cv$x[, 2],
+  class = dengue_class
+) %>%
+  dplyr::mutate(
+    class = if_else(
+      class == "convalescent",
+      paste0(
+        "Conv. (",
+        sprintf("%.3f", round(summary(scpca_cv_group_sil)$clus.avg.widths[1], 3)),
+        ")"),
+      if_else(
+        class == "DF",
+        paste0(
+        "DF (",
+        sprintf("%.3f", round(summary(scpca_cv_group_sil)$clus.avg.widths[2], 3)),
+        ")"),
+        paste0("DHF (",
+        sprintf("%.3f", round(summary(scpca_cv_group_sil)$clus.avg.widths[3], 3)),
+        ")")
+      )
+    )
+  )
+
+scpca_cv_p <- scpca_cv_df %>%
+  ggplot(aes(x = scPC1, y = scPC2, colour = class)) +
+  geom_point() +
+  ggtitle("3-Fold CV-scPCA") +
+  scale_colour_viridis_d(name = "Class",
+                         begin = 0.1, end = 0.9) +
+  theme_minimal()
+scpca_cv_p
+```
+
+
+```{r save-dengue-data-cv-plot}
+comb_cv_p <- ggarrange(
+  cpca_cv_p,
+  scpca_cv_p,
+  nrow = 1,
+  ncol = 2
+)
+ggsave(
+  filename = here("manuscript", "figures", "dengue_cv_results.png"),
+  units = "mm",
+  width = 178,
+  height = 60,
+  dpi = 320,
+  scale = 1.5,
+  plot = comb_cv_p
+)
+```
+
+## t-SNE
+
+### With Initial PCA Step
+
+```{r tsne_with_pca}
+# get tsne representation
+dengue_tsne_pca <- Rtsne(target, perplexity = 8, pca = TRUE, max_iter = 1000,
+                         theta = 0)
+
+# t-SNE silhouette width
+tsne_pca_group_sil <- silhouette(group_mem, dist(dengue_tsne_pca$Y))
+
+# plot the first two axes
+tsne_pca_df <- data.frame(
+  TSNE1 = dengue_tsne_pca$Y[, 1],
+  TSNE2 = dengue_tsne_pca$Y[, 2],
+  class = dengue_class
+) %>%
+  dplyr::mutate(
+    class = if_else(
+      class == "convalescent",
+      paste0(
+        "Conv. (",
+        sprintf("%.3f", round(summary(tsne_pca_group_sil)$clus.avg.widths[1], 3)),
+        ")"),
+      if_else(
+        class == "DF",
+        paste0(
+        "DF (",
+        sprintf("%.3f", round(summary(tsne_pca_group_sil)$clus.avg.widths[2], 3)),
+        ")"),
+        paste0("DHF (",
+        sprintf("%.3f", round(summary(tsne_pca_group_sil)$clus.avg.widths[3], 3)),
+        ")")
+      )
+    )
+  )
+
+
+tsne_pca_p <- tsne_pca_df %>%
+  ggplot(aes(x = TSNE1, y = TSNE2, colour = class)) +
+  geom_point() +
+  xlab("tSNE1") +
+  ylab("tSNE2") +
+  ggtitle("t-SNE") +
+  scale_colour_viridis_d(name = "Class",
+                         begin = 0.1, end = 0.9) +
+  theme_minimal()
+tsne_pca_p
+```
+
+### Without Initial PCA Step
+
+```{r tsne}
+# get tsne representation
+dengue_tsne <- Rtsne(target, perplexity = 8, pca = FALSE, theta = 0)
+
+# t-SNE silhouette width
+tsne_group_sil <- silhouette(group_mem, dist(dengue_tsne$Y))
+
+# plot the first two axes
+tsne_df <- data.frame(
+  TSNE1 = dengue_tsne$Y[, 1],
+  TSNE2 = dengue_tsne$Y[, 2],
+  class = dengue_class
+) %>%
+  dplyr::mutate(
+    class = if_else(
+      class == "convalescent",
+      paste0(
+        "Conv. (",
+        sprintf("%.3f", round(summary(tsne_group_sil)$clus.avg.widths[1], 3)),
+        ")"),
+      if_else(
+        class == "DF",
+        paste0(
+        "DF (",
+        sprintf("%.3f", round(summary(tsne_group_sil)$clus.avg.widths[2], 3)),
+        ")"),
+        paste0("DHF (",
+        sprintf("%.3f", round(summary(tsne_group_sil)$clus.avg.widths[3], 3)),
+        ")")
+      )
+    )
+  )
+
+
+tsne_p <- tsne_df %>%
+  ggplot(aes(x = TSNE1, y = TSNE2, colour = class)) +
+  geom_point() +
+  xlab("tSNE1") +
+  ylab("tSNE2") +
+  ggtitle("t-SNE") +
+  scale_colour_viridis_d(name = "Class",
+                         begin = 0.1, end = 0.9) +
+  theme_minimal()
+tsne_p
+```
+
+## UMAP
+
+```{r umap}
+# set the parameters
+params <- umap.defaults
+params$n_neighbors <- 15
+params$min_dist <- 0.2
+
+# get the umap representation
+dengue_umap <- umap(target, config = params)
+
+# umap silhouette width
+umap_group_sil <- silhouette(group_mem, dist(dengue_umap$layout))
+
+# plot the first two axes
+umap_df <- dengue_umap$layout %>%
+  as.data.frame() %>%
+  dplyr::mutate(class = dengue_class) %>%
+  dplyr::mutate(
+    class = if_else(
+      class == "convalescent",
+      paste0(
+        "Conv. (",
+        sprintf("%.3f", round(summary(umap_group_sil)$clus.avg.widths[1], 3)),
+        ")"),
+      if_else(
+        class == "DF",
+        paste0(
+        "DF (",
+        sprintf("%.3f", round(summary(umap_group_sil)$clus.avg.widths[2], 3)),
+        ")"),
+        paste0("DHF (",
+        sprintf("%.3f", round(summary(umap_group_sil)$clus.avg.widths[3], 3)),
+        ")")
+      )
+    )
+  )
+  
+colnames(umap_df) <- c("UMAP1", "UMAP2", "class")
+
+umap_p <- umap_df %>%
+  ggplot(aes(x = UMAP1, y = UMAP2, colour = class)) +
+  geom_point() +
+  ggtitle("UMAP") +
+  scale_colour_viridis_d(name = "Class",
+                         begin = 0.1, end = 0.9) +
+  theme_minimal()
+umap_p
+```
+
+
+# Combined Plots
+
+```{r comb_plots, fig.retina=3, fig.width=8, fig.height=8}
+comb_plot <- ggarrange(
+  ggarrange(pca_p, umap_p, cpca_p, scpca_p,
+            ncol = 2, nrow = 2),
+  loadings_comp,
+  nrow = 2,
+  labels = "AUTO",
+  heights = c(2, 1)
+)
+comb_plot
+```
+
