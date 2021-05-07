@@ -14,11 +14,14 @@ The objective of this project is to extract signal from high-dimensional biologi
 
 ## Instructions:
 ### BMMC dataset
-1. Go to file: [analyses\bmmc_data\bmmc_analysis.Rmd](analyses\bmmc_data\bmmc_analysis.Rmd)
+1. Go to file: [analyses/bmmc_data/bmmc_analysis.Rmd](/analyses/bmmc_data/bmmc_analysis.Rmd)
 2. Change Path on Line 30 to the desired folder containing load_count_data.R file.
 3. Run the code chunks sequentially to avoid any errors. 
 
 ### Dengue dataset
-1. Go to file: [analyses\dengue_data\dengue_analysis.Rmd](analyses\dengue_data\dengue_analysis.Rmd)
+1. Go to file: [analyses/dengue_data/dengue_analysis.Rmd](/analyses/dengue_data/dengue_analysis.Rmd)
 2. Change Path on Line 323 to the desired folder containing scpca.Rdata file.
 3. Run the code chunks sequentially to avoid any errors.
+
+
+
