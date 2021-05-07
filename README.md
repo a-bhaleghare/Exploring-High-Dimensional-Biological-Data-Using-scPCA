@@ -10,7 +10,7 @@ The objective of this project is to extract signal from high-dimensional biologi
 
 ## Prerequisites:
 1. BiocManager Packages -Installation Guide: [https://bioconductor.org/install/#install-bioconductor-packages](https://bioconductor.org/install/#install-bioconductor-packages)
-2. The [txt file](/Packages to be installed.txt) containing list of all the packages to be installed has been uploaded in the repository.   
+2. The [txt file](/Packages-to-be-installed) containing list of all the packages to be installed has been uploaded in the repository.   
 
 ## Instructions:
 ### BMMC dataset
